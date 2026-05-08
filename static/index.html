@@ -10,8 +10,10 @@
     <main>
       <header>
         <h1>PDF → Quizlet</h1>
-        <p class="sub">Upload a PDF, get flashcards. Uses GPT-4o vision so it works on scans, equations, and diagrams that OCR can't read.</p>
+        <p class="sub">Upload a PDF, get flashcards. Uses OpenAI vision so it works on scans, equations, and diagrams that OCR can't read.</p>
       </header>
+
+      <div id="config-banner" class="banner" hidden></div>
 
       <form id="form">
         <label class="drop" id="drop">
@@ -19,20 +21,27 @@
           <span id="drop-label">Drop a PDF here, or click to choose</span>
         </label>
 
-        <details>
-          <summary>API key &amp; model</summary>
-          <div class="row">
-            <label>
-              OpenAI API key
-              <input type="password" id="api_key" placeholder="sk-… (stored only in your browser)" autocomplete="off" />
-            </label>
-            <label>
-              Model
-              <input type="text" id="model" value="gpt-4o" />
-            </label>
-          </div>
-          <p class="hint">Leave key blank to use the server's <code>OPENAI_API_KEY</code> if one is configured.</p>
-        </details>
+        <div class="row range-row">
+          <label>
+            From page
+            <input type="number" id="start_page" min="1" value="1" />
+          </label>
+          <label>
+            To page
+            <input type="number" id="end_page" min="1" placeholder="end" />
+          </label>
+          <label class="quick">
+            Quick set
+            <select id="quick">
+              <option value="">—</option>
+              <option value="all">All pages</option>
+              <option value="5">First 5</option>
+              <option value="10">First 10</option>
+              <option value="25">First 25</option>
+            </select>
+          </label>
+        </div>
+        <p class="hint" id="page-hint">Leave “To page” blank to convert to the end of the document.</p>
 
         <button id="go" type="submit" disabled>Convert</button>
       </form>

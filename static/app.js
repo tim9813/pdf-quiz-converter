@@ -4,8 +4,10 @@ const form = $("#form");
 const drop = $("#drop");
 const dropLabel = $("#drop-label");
 const fileInput = $("#file");
-const apiKeyInput = $("#api_key");
-const modelInput = $("#model");
+const startInput = $("#start_page");
+const endInput = $("#end_page");
+const quickSel = $("#quick");
+const pageHint = $("#page-hint");
 const goBtn = $("#go");
 const statusEl = $("#status");
 const resultsEl = $("#results");
@@ -13,26 +15,64 @@ const countEl = $("#count");
 const tbody = document.querySelector("#cards-table tbody");
 const copyBtn = $("#copy");
 const downloadBtn = $("#download");
-
-// Persist API key + model in localStorage so users don't retype.
-apiKeyInput.value = localStorage.getItem("openai_api_key") || "";
-modelInput.value = localStorage.getItem("openai_model") || modelInput.value;
-apiKeyInput.addEventListener("change", () => localStorage.setItem("openai_api_key", apiKeyInput.value));
-modelInput.addEventListener("change", () => localStorage.setItem("openai_model", modelInput.value));
+const banner = $("#config-banner");
 
 let selectedFile = null;
+let totalPages = null;
 let cards = [];
+
+async function checkConfig() {
+  try {
+    const r = await fetch("/api/health");
+    const j = await r.json();
+    if (!j.key_configured) {
+      banner.hidden = false;
+      banner.classList.add("warn");
+      banner.innerHTML = `No API key in <code>config.json</code>. Copy <code>config.example.json</code> to <code>config.json</code> and add your key.`;
+    } else {
+      banner.hidden = false;
+      banner.classList.remove("warn");
+      banner.innerHTML = `Using model <code>${j.model}</code> (configured in <code>config.json</code>).`;
+    }
+  } catch {
+    /* ignore */
+  }
+}
+checkConfig();
 
 function setFile(f) {
   selectedFile = f;
+  totalPages = null;
   if (f) {
     dropLabel.textContent = `${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB)`;
     drop.classList.add("has-file");
     goBtn.disabled = false;
+    fetchPageCount(f);
   } else {
     dropLabel.textContent = "Drop a PDF here, or click to choose";
     drop.classList.remove("has-file");
     goBtn.disabled = true;
+    pageHint.textContent = "Leave “To page” blank to convert to the end of the document.";
+  }
+}
+
+async function fetchPageCount(f) {
+  pageHint.textContent = "Reading page count…";
+  const fd = new FormData();
+  fd.append("file", f);
+  try {
+    const r = await fetch("/api/pdf-info", { method: "POST", body: fd });
+    const j = await r.json();
+    if (r.ok) {
+      totalPages = j.page_count;
+      endInput.max = totalPages;
+      startInput.max = totalPages;
+      pageHint.textContent = `PDF has ${totalPages} pages. Leave “To page” blank for end.`;
+    } else {
+      pageHint.textContent = j.detail || "Could not read page count.";
+    }
+  } catch {
+    pageHint.textContent = "Could not read page count.";
   }
 }
 
@@ -57,15 +97,18 @@ drop.addEventListener("drop", (e) => {
   else showStatus("Please drop a PDF file.", true);
 });
 
+quickSel.addEventListener("change", () => {
+  const v = quickSel.value;
+  if (!v) return;
+  startInput.value = 1;
+  if (v === "all") endInput.value = "";
+  else endInput.value = v;
+});
+
 function showStatus(html, isError = false) {
   statusEl.hidden = false;
   statusEl.classList.toggle("error", isError);
   statusEl.innerHTML = html;
-}
-function clearStatus() {
-  statusEl.hidden = true;
-  statusEl.classList.remove("error");
-  statusEl.innerHTML = "";
 }
 
 function renderCards(list) {
@@ -91,9 +134,8 @@ function toTSV(list) {
 }
 
 copyBtn.addEventListener("click", async () => {
-  const text = toTSV(cards);
   try {
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(toTSV(cards));
     copyBtn.textContent = "Copied!";
     setTimeout(() => (copyBtn.textContent = "Copy for Quizlet"), 1500);
   } catch {
@@ -115,14 +157,18 @@ form.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!selectedFile) return;
 
+  const start = parseInt(startInput.value, 10) || 1;
+  const end = parseInt(endInput.value, 10) || 0; // 0 = to end on the server
+
   goBtn.disabled = true;
   resultsEl.hidden = true;
-  showStatus(`<span class="spinner"></span>Converting… this can take ~3–6s per page.`);
+  const range = end > 0 ? `pages ${start}–${end}` : `pages ${start}–end`;
+  showStatus(`<span class="spinner"></span>Converting ${range}… roughly 3–6s per page.`);
 
   const fd = new FormData();
   fd.append("file", selectedFile);
-  fd.append("api_key", apiKeyInput.value.trim());
-  fd.append("model", modelInput.value.trim() || "gpt-4o");
+  fd.append("start_page", String(start));
+  fd.append("end_page", String(end));
 
   try {
     const resp = await fetch("/api/convert", { method: "POST", body: fd });
@@ -132,7 +178,7 @@ form.addEventListener("submit", async (e) => {
       return;
     }
     renderCards(data.cards || []);
-    let msg = `Done. ${data.card_count} cards from ${data.page_count} pages.`;
+    let msg = `Done. ${data.card_count} cards from pages ${data.page_range[0]}–${data.page_range[1]} (of ${data.total_pages}).`;
     if (data.errors?.length) msg += ` (${data.errors.length} page errors: ${data.errors.join("; ")})`;
     showStatus(msg);
   } catch (err) {

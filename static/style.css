@@ -69,6 +69,36 @@ details[open] summary { color: var(--text); margin-bottom: 12px; }
   grid-template-columns: 2fr 1fr;
   gap: 12px;
 }
+.range-row {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+input[type="number"], select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 12px;
+  border-radius: 8px;
+  font: inherit;
+}
+.banner {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+.banner.warn {
+  border-color: #b9892a;
+  color: #f3c878;
+}
+.banner code {
+  background: var(--panel-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--text);
+}
 label {
   display: flex;
   flex-direction: column;

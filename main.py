@@ -15,7 +15,9 @@ load_dotenv()
 
 app = FastAPI(title="PDF → Quizlet Converter")
 
-DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+ROOT = Path(__file__).parent
+CONFIG_PATH = ROOT / "config.json"
+
 RENDER_DPI = int(os.environ.get("RENDER_DPI", "150"))
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "5"))
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "100"))
@@ -33,6 +35,16 @@ Aim for cards a student would actually want to memorize. Keep terms short (a wor
 Respond ONLY with JSON in exactly this shape:
 {"cards": [{"term": "...", "definition": "..."}]}
 """
+
+
+def load_config() -> dict:
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        with CONFIG_PATH.open() as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return {}
 
 
 def render_page_png(page: "fitz.Page", dpi: int) -> bytes:
@@ -80,18 +92,37 @@ async def extract_cards_from_image(
     ]
 
 
+@app.post("/api/pdf-info")
+async def pdf_info(file: UploadFile = File(...)):
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "File must be a PDF")
+    try:
+        doc = fitz.open(stream=await file.read(), filetype="pdf")
+    except Exception as e:
+        raise HTTPException(400, f"Could not open PDF: {e}")
+    pages = doc.page_count
+    doc.close()
+    return {"page_count": pages}
+
+
 @app.post("/api/convert")
 async def convert(
     file: UploadFile = File(...),
-    api_key: str = Form(""),
-    model: str = Form(DEFAULT_MODEL),
+    start_page: int = Form(1),
+    end_page: int = Form(0),  # 0 means "to last page"
 ):
+    config = load_config()
+    api_key = str(config.get("api_key", "")).strip()
+    model = str(config.get("model", "gpt-4o")).strip() or "gpt-4o"
+
+    if not api_key or api_key.startswith("sk-..."):
+        raise HTTPException(
+            400,
+            "No API key in config.json. Copy config.example.json to config.json and fill in your key.",
+        )
+
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "File must be a PDF")
-
-    key = api_key.strip() or os.environ.get("OPENAI_API_KEY", "").strip()
-    if not key:
-        raise HTTPException(400, "No OpenAI API key provided. Paste one in the form or set OPENAI_API_KEY.")
 
     pdf_bytes = await file.read()
     try:
@@ -99,18 +130,25 @@ async def convert(
     except Exception as e:
         raise HTTPException(400, f"Could not open PDF: {e}")
 
-    if doc.page_count > MAX_PAGES:
+    total = doc.page_count
+    s = max(1, start_page)
+    e = total if end_page <= 0 else min(end_page, total)
+    if s > e:
+        doc.close()
+        raise HTTPException(400, f"start_page ({s}) is greater than end_page ({e})")
+
+    selected = list(range(s - 1, e))  # 0-indexed
+    if len(selected) > MAX_PAGES:
         doc.close()
         raise HTTPException(
             400,
-            f"PDF has {doc.page_count} pages; limit is {MAX_PAGES}. Split it or raise MAX_PAGES.",
+            f"Selected {len(selected)} pages, exceeds limit of {MAX_PAGES}. Narrow the range or raise MAX_PAGES.",
         )
 
-    pngs = [render_page_png(doc[i], RENDER_DPI) for i in range(doc.page_count)]
-    page_count = doc.page_count
+    pngs = [render_page_png(doc[i], RENDER_DPI) for i in selected]
     doc.close()
 
-    client = AsyncOpenAI(api_key=key)
+    client = AsyncOpenAI(api_key=api_key)
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
     try:
         per_page = await asyncio.gather(
@@ -122,9 +160,10 @@ async def convert(
 
     cards: list[dict] = []
     errors: list[str] = []
-    for i, result in enumerate(per_page):
+    for offset, result in enumerate(per_page):
+        page_num = selected[offset] + 1
         if isinstance(result, Exception):
-            errors.append(f"page {i + 1}: {result}")
+            errors.append(f"page {page_num}: {result}")
         else:
             cards.extend(result)
 
@@ -132,7 +171,10 @@ async def convert(
         {
             "cards": cards,
             "card_count": len(cards),
-            "page_count": page_count,
+            "pages_processed": len(selected),
+            "page_range": [s, e],
+            "total_pages": total,
+            "model": model,
             "errors": errors,
         }
     )
@@ -140,8 +182,12 @@ async def convert(
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "model": DEFAULT_MODEL}
+    config = load_config()
+    return {
+        "ok": True,
+        "key_configured": bool(str(config.get("api_key", "")).strip()) and not str(config.get("api_key", "")).startswith("sk-..."),
+        "model": str(config.get("model", "gpt-4o")) or "gpt-4o",
+    }
 
 
-static_dir = Path(__file__).parent / "static"
-app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")
